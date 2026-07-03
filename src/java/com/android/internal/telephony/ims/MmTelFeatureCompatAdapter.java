@@ -285,6 +285,10 @@ public class MmTelFeatureCompatAdapter extends MmTelFeature {
         }
     };
 
+    // ImsResolver can call onFeatureRemoved() without a preceding onFeatureReady(); guard so
+    // unregistering an unregistered mReceiver can't throw and crash-loop com.android.phone.
+    private boolean mReceiverRegistered = false;
+
     public MmTelFeatureCompatAdapter(Context context, int slotId,
             MmTelInterfaceAdapter compatFeature) {
         initialize(context, slotId);
@@ -433,7 +437,10 @@ public class MmTelFeatureCompatAdapter extends MmTelFeature {
 
     @Override
     public void onFeatureRemoved() {
-        mContext.unregisterReceiver(mReceiver);
+        if (mReceiverRegistered) {
+            mContext.unregisterReceiver(mReceiver);
+            mReceiverRegistered = false;
+        }
         try {
             mCompatFeature.endSession(mSessionId);
             mCompatFeature.removeRegistrationListener(mListener);
@@ -452,7 +459,10 @@ public class MmTelFeatureCompatAdapter extends MmTelFeature {
         // This gets called when MmTelFeature.setListener is called. We need to use this time to
         // call openSession on the old MMTelFeature implementation.
         IntentFilter intentFilter = new IntentFilter(ImsManager.ACTION_IMS_INCOMING_CALL);
-        mContext.registerReceiver(mReceiver, intentFilter);
+        if (!mReceiverRegistered) {
+            mContext.registerReceiver(mReceiver, intentFilter);
+            mReceiverRegistered = true;
+        }
         try {
             mSessionId = mCompatFeature.startSession(createIncomingCallPendingIntent(),
                     new ImsRegistrationListenerBase());
