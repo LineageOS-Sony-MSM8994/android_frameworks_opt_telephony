@@ -5327,6 +5327,16 @@ public class RIL extends BaseCommands implements CommandsInterface {
             }
         } else {
             switch (rr.mRequest) {
+                case RIL_REQUEST_ENTER_SIM_PIN:
+                case RIL_REQUEST_ENTER_SIM_PIN2:
+                case RIL_REQUEST_CHANGE_SIM_PIN:
+                case RIL_REQUEST_CHANGE_SIM_PIN2:
+                    // DSDS: qcril omits SIM_STATUS_CHANGED after a successful PIN verify,
+                    // so force a re-poll to clear the lock state on that slot.
+                    if (mIccStatusChangedRegistrants != null) {
+                        mIccStatusChangedRegistrants.notifyRegistrants();
+                    }
+                    break;
                 case RIL_REQUEST_HANGUP_FOREGROUND_RESUME_BACKGROUND:
                     if (mTestingEmergencyCall.getAndSet(false)) {
                         if (mEmergencyCallbackModeRegistrant != null) {

@@ -3180,7 +3180,10 @@ public class RILUtils {
         }
 
         if (address == null || prefixLength == -1) {
-            throw new IllegalArgumentException("Invalid link address " + addressString);
+            // Some modems return empty link addresses in failed setupDataCall responses (cause != 0);
+            // throwing crashes the binder response handler and leaves DataNetwork stuck in
+            // ConnectingState. Return null so the caller can skip it.
+            return null;
         }
 
         return new LinkAddress(address, prefixLength, properties, 0, deprecationTime,
@@ -3230,7 +3233,8 @@ public class RILUtils {
             mtu = mtuV4 = mtuV6 = result.mtu;
             if (addresses != null) {
                 for (String address : addresses) {
-                    laList.add(convertToLinkAddress(address));
+                    LinkAddress la = convertToLinkAddress(address);
+                    if (la != null) laList.add(la);
                 }
             }
         } else if (dcResult instanceof android.hardware.radio.V1_5.SetupDataCallResult) {
@@ -3244,6 +3248,7 @@ public class RILUtils {
             ifname = result.ifname;
             laList = result.addresses.stream().map(la -> convertToLinkAddress(
                             la.address, la.properties, la.deprecationTime, la.expirationTime))
+                    .filter(la -> la != null)
                     .collect(Collectors.toList());
             dnses = result.dnses.toArray(new String[0]);
             gateways = result.gateways.toArray(new String[0]);
@@ -3262,6 +3267,7 @@ public class RILUtils {
             ifname = result.ifname;
             laList = result.addresses.stream().map(la -> convertToLinkAddress(
                             la.address, la.properties, la.deprecationTime, la.expirationTime))
+                    .filter(la -> la != null)
                     .collect(Collectors.toList());
             dnses = result.dnses.toArray(new String[0]);
             gateways = result.gateways.toArray(new String[0]);

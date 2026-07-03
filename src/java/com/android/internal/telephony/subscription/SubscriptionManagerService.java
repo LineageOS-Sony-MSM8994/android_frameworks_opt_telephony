@@ -1572,10 +1572,32 @@ public class SubscriptionManagerService extends ISub.Stub {
 
                 subInfo = mSubscriptionDatabaseManager.getSubscriptionInfoInternal(subId);
                 if (subInfo != null && subInfo.areUiccApplicationsEnabled()) {
-                    mSlotIndexToSubId.put(phoneId, subId);
-                    // Update the SIM slot index. This will make the subscription active.
-                    mSubscriptionDatabaseManager.setSimSlotIndex(subId, phoneId);
-                    logl("updateSubscription: current mapping " + slotMappingToString());
+                    // Single-modem dual-SIM: empty 2nd slot mirrors the real card (same ICCID -> same subId);
+                    // mapping one subId to both slots makes PhoneSwitcher churn ALLOW_DATA and kill data.
+                    Integer dupSlot = null;
+                    for (Map.Entry<Integer, Integer> e : mSlotIndexToSubId.entrySet()) {
+                        if (e.getKey() != null && e.getValue() != null
+                                && e.getKey() != phoneId && e.getValue() == subId) {
+                            dupSlot = e.getKey();
+                            break;
+                        }
+                    }
+                    if (dupSlot != null && dupSlot <= phoneId) {
+                        logl("updateSubscription: subId=" + subId + " already active on slot "
+                                + dupSlot + "; dropping phantom mirror on slot " + phoneId);
+                    } else {
+                        if (dupSlot != null) {
+                            // subId was mapped to a higher (phantom) slot; move it to this
+                            // lower primary slot.
+                            logl("updateSubscription: moving subId=" + subId + " from phantom slot "
+                                    + dupSlot + " to primary slot " + phoneId);
+                            markSubscriptionsInactive(dupSlot);
+                        }
+                        mSlotIndexToSubId.put(phoneId, subId);
+                        // Update the SIM slot index. This will make the subscription active.
+                        mSubscriptionDatabaseManager.setSimSlotIndex(subId, phoneId);
+                        logl("updateSubscription: current mapping " + slotMappingToString());
+                    }
                 }
 
                 // Update the card id.
