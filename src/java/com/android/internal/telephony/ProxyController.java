@@ -95,6 +95,8 @@ public class ProxyController {
     private int[] mSetRadioAccessFamilyStatus;
     private int mRadioAccessFamilyStatusCounter;
     private boolean mTransactionFailed = false;
+    // True while reverting a failed swap; stops a failed revert from looping + holding the wakelock.
+    private boolean mReverting = false;
 
     private String[] mCurrentLogicalModemIds;
     private String[] mNewLogicalModemIds;
@@ -240,6 +242,18 @@ public class ProxyController {
     }
 
     private boolean doSetRadioCapabilities(RadioAccessFamily[] rafs) {
+        // Single physical modem reports one UUID for all phones, so a swap or revert
+        // mapping two phones to the same modem id collides and self-retries forever.
+        HashSet<String> uniqueModemIds = new HashSet<String>(mPhones.length);
+        for (int i = 0; i < rafs.length; i++) {
+            String modemId = getLogicalModemIdFromRaf(rafs[i].getRadioAccessFamily());
+            if (modemId != null && !modemId.isEmpty() && !uniqueModemIds.add(modemId)) {
+                logd("doSetRadioCapabilities: logical modems share a UUID; skipping swap");
+                clearTransaction();
+                return false;
+            }
+        }
+
         // A new sessionId for this transaction
         mRadioCapabilitySessionId = mUniqueIdGenerator.getAndIncrement();
 
@@ -547,7 +561,12 @@ public class ProxyController {
 
             // send FINISH request with fail status and then uniqueDifferentId
             mTransactionFailed = true;
-            issueFinish(mRadioCapabilitySessionId);
+            if (mReverting) {
+                // The revert itself timed out; release instead of looping the finish dance.
+                clearTransaction();
+            } else {
+                issueFinish(mRadioCapabilitySessionId);
+            }
         }
     }
 
@@ -602,13 +621,21 @@ public class ProxyController {
             clearTransaction();
         } else {
             intent = new Intent(TelephonyIntents.ACTION_SET_RADIO_CAPABILITY_FAILED);
-            // now revert.
-            mTransactionFailed = false;
-            RadioAccessFamily[] rafs = new RadioAccessFamily[mPhones.length];
-            for (int phoneId = 0; phoneId < mPhones.length; phoneId++) {
-                rafs[phoneId] = new RadioAccessFamily(phoneId, mOldRadioAccessFamily[phoneId]);
+            if (mReverting) {
+                // The revert itself failed; stop instead of looping and holding the wakelock.
+                logd("completeRadioCapabilityTransaction: revert failed, releasing");
+                mReverting = false;
+                clearTransaction();
+            } else {
+                // now revert.
+                mReverting = true;
+                mTransactionFailed = false;
+                RadioAccessFamily[] rafs = new RadioAccessFamily[mPhones.length];
+                for (int phoneId = 0; phoneId < mPhones.length; phoneId++) {
+                    rafs[phoneId] = new RadioAccessFamily(phoneId, mOldRadioAccessFamily[phoneId]);
+                }
+                doSetRadioCapabilities(rafs);
             }
-            doSetRadioCapabilities(rafs);
         }
 
         // Broadcast that we're done
@@ -627,6 +654,7 @@ public class ProxyController {
                 mNewRadioAccessFamily[i] = 0;
                 mTransactionFailed = false;
             }
+            mReverting = false;
 
             if (isWakeLockHeld()) {
                 logd("clearTransaction:checking wakelock held and releasing");

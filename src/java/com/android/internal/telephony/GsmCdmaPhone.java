@@ -136,7 +136,10 @@ import com.android.internal.telephony.util.ArrayUtils;
 import com.android.internal.telephony.util.WorkerThread;
 import com.android.telephony.Rlog;
 
+import java.io.BufferedReader;
 import java.io.FileDescriptor;
+import java.io.FileReader;
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -2734,6 +2737,9 @@ public class GsmCdmaPhone extends Phone {
 
     private void handleRadioAvailable() {
         mCi.getBasebandVersion(obtainMessage(EVENT_GET_BASEBAND_VERSION_DONE));
+        // On single-sub modems re-presented as dual-SIM (Sony kitakami dsds), seed the correct
+        // per-slot IMEI from the bootloader as early as radio-available. No-op elsewhere.
+        maybeAssignImeiFromBootloader();
         mCi.getImei(obtainMessage(EVENT_GET_DEVICE_IMEI_DONE));
         mCi.getDeviceIdentity(obtainMessage(EVENT_GET_DEVICE_IDENTITY_DONE));
         mCi.getRadioCapability(obtainMessage(EVENT_GET_RADIO_CAPABILITY));
@@ -2791,8 +2797,10 @@ public class GsmCdmaPhone extends Phone {
                 String[] respId = (String[])ar.result;
                 if (TextUtils.isEmpty(mImei)) {
                     mImei = respId[0];
-                    mImeiSv = respId[1];
                 }
+                // SVN is device-wide and only the modem reports it; take it from getDeviceIdentity,
+                // not from #246's bootloader IMEI (its IMEISV carries a placeholder 00 SVN).
+                mImeiSv = respId[1];
                 mEsn  =  respId[2];
                 mMeid =  respId[3];
                 // some modems return all 0's instead of null/empty string when MEID is unavailable
@@ -2800,6 +2808,10 @@ public class GsmCdmaPhone extends Phone {
                     logd("EVENT_GET_DEVICE_IDENTITY_DONE: set mMeid to null");
                     mMeid = null;
                 }
+                // The single Sony modem returns the SAME IMEI for both logical slots; override
+                // with the genuine per-slot IMEI from the bootloader command line. No-op when
+                // oemandroidboot.phoneid is absent (i.e. on non-Sony hardware).
+                maybeAssignImeiFromBootloader();
             }
             break;
 
@@ -3372,6 +3384,75 @@ public class GsmCdmaPhone extends Phone {
         } else {
             loge("parseImeiInfo :: IMEI value is empty");
         }
+        // Let the bootloader-provided per-slot IMEI take precedence on single-sub dual-SIM
+        // modems that cannot report distinct IMEIs per logical slot. No-op otherwise.
+        maybeAssignImeiFromBootloader();
+    }
+
+    /**
+     * Sony dual-SIM devices expose one single-sub modem as two logical radios (same IMEI on both
+     * slots); reads the genuine per-slot IMEI from the bootloader oemandroidboot.phoneid cmdline arg.
+     *
+     * @return {@code true} if an IMEI was assigned from the bootloader; {@code false} otherwise.
+     */
+    private boolean maybeAssignImeiFromBootloader() {
+        String cmdline;
+        try (BufferedReader br = new BufferedReader(new FileReader("/proc/cmdline"))) {
+            cmdline = br.readLine();
+        } catch (IOException e) {
+            return false;
+        }
+        if (TextUtils.isEmpty(cmdline)) return false;
+
+        final String key = "oemandroidboot.phoneid=";
+        String phoneIdArg = null;
+        for (String tok : cmdline.split("\\s+")) {
+            if (tok.startsWith(key)) {
+                phoneIdArg = tok.substring(key.length());
+                break;
+            }
+        }
+        if (TextUtils.isEmpty(phoneIdArg)) return false;
+
+        String[] entries = phoneIdArg.split(",");
+        int slot = getPhoneId();
+        if (slot < 0 || slot >= entries.length) return false;
+
+        // Each entry looks like "0000:<IMEISV>"; keep the digits after the last ':'.
+        String entry = entries[slot];
+        int colon = entry.lastIndexOf(':');
+        String imeisv = (colon >= 0 ? entry.substring(colon + 1) : entry).replaceAll("[^0-9]", "");
+        if (imeisv.length() < 14) return false;
+
+        String base = imeisv.substring(0, 14);              // 14-digit TAC + serial
+        String imei = base + computeLuhnCheckDigit(base);   // complete 15-digit IMEI
+
+        mImei = imei;
+        // mImeiSv intentionally left to the modem's getDeviceIdentity value (real SVN).
+        mImeiType = (slot == 0) ? IMEI_TYPE_PRIMARY : IMEI_TYPE_SECONDARY;
+        logd("maybeAssignImeiFromBootloader: assigned bootloader IMEI for phoneId=" + slot
+                + " type=" + mImeiType);
+        return true;
+    }
+
+    /**
+     * Standard Luhn check digit for a numeric payload, used to complete a 14-digit IMEI base into
+     * a valid 15-digit IMEI. The check digit sits to the right of the payload, so the rightmost
+     * payload digit is the first to be doubled.
+     */
+    private static int computeLuhnCheckDigit(String payload) {
+        int sum = 0;
+        boolean dbl = true;
+        for (int i = payload.length() - 1; i >= 0; i--) {
+            int d = payload.charAt(i) - '0';
+            if (dbl) {
+                d *= 2;
+                if (d > 9) d -= 9;
+            }
+            sum += d;
+            dbl = !dbl;
+        }
+        return (10 - (sum % 10)) % 10;
     }
 
     /**

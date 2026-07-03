@@ -128,7 +128,16 @@ public class RadioInterfaceCapabilityController extends Handler {
                         loge("setupRadioInterfaceCapabilities: " + ar.exception);
                     }
                     if (ar.result == null) {
-                        loge("setupRadioInterfaceCapabilities: ar.result is null");
+                        // No radio.config HAL (or non-responsive): cache an empty capability set and
+                        // notify the waiter instead of returning empty, so callers don't block on the
+                        // 2s wait() every time.
+                        loge("setupRadioInterfaceCapabilities: ar.result is null; "
+                                + "caching empty capability set (no radio.config HAL / "
+                                + "non-responsive HAL)");
+                        mRadioInterfaceCapabilities =
+                                Collections.unmodifiableSet(new ArraySet<>());
+                        unregister();
+                        mLockRadioInterfaceCapabilities.notify();
                         return;
                     }
                     log("setupRadioInterfaceCapabilities: "
